@@ -53,7 +53,8 @@ class ViT_HER2ST(torch.utils.data.Dataset):
             self.names = te_names
 
         print('Loading imgs...')
-        self.img_dict = {i:torch.Tensor(np.array(self.get_img(i))) for i in self.names}
+        #self.img_dict = {i:torch.Tensor(np.array(self.get_img(i))) for i in self.names} #torch.Tensor copies data --> more memory
+        self.img_dict = {i:torch.from_numpy(np.array(self.get_img(i))) for i in self.names}
         print('Loading metadata...')
         self.meta_dict = {i:self.get_meta(i) for i in self.names}
         self.label={i:None for i in self.names}
@@ -212,8 +213,10 @@ class ViT_SKIN(torch.utils.data.Dataset):
         self.dir = './data/GSE144240_RAW/'
         self.r = 224//r
 
-        patients = ['P2', 'P5', 'P9', 'P10']
-        reps = ['rep1', 'rep2', 'rep3']
+        patients = ['P2', "P5", ] # here, I limit the size of the dataset to two images as to prevent crashing the kernel
+        reps = ['rep1', ]
+        #patients = ['P2', 'P5', 'P9', 'P10']
+        #reps = ['rep1', 'rep2', 'rep3']
         names = []
         for i in patients:
             for j in reps:
@@ -237,7 +240,7 @@ class ViT_SKIN(torch.utils.data.Dataset):
 
         print(te_names)
         print('Loading imgs...')
-        self.img_dict = {i:torch.Tensor(np.array(self.get_img(i))) for i in self.names}
+        self.img_dict = {i:torch.from_numpy(np.array(self.get_img(i))) for i in self.names} #changed to .from_numpy to save memory
         print('Loading metadata...')
         self.meta_dict = {i:self.get_meta(i) for i in self.names}
 
@@ -349,6 +352,170 @@ class ViT_SKIN(torch.utils.data.Dataset):
             id.append(str(x[i])+'x'+str(y[i])) 
         df['id'] = id
 
+        return df
+
+    def get_meta(self,name,gene_list=None):
+        cnt = self.get_cnt(name)
+        pos = self.get_pos(name)
+        meta = cnt.join(pos.set_index('id'),how='inner')
+
+        return meta
+
+    def get_overlap(self,meta_dict,gene_list):
+        gene_set = set(gene_list)
+        for i in meta_dict.values():
+            gene_set = gene_set&set(i.columns)
+        return list(gene_set)
+
+class ViT_LIVER(torch.utils.data.Dataset):
+    """Some Information about ViT_LIVER"""
+    def __init__(self,train=True,r=4,norm=False,fold=0,flatten=True,ori=False,adj=False,prune='NA',neighs=4):
+        super(ViT_LIVER, self).__init__()
+
+        self.dir = './data/GSE240429_RAW/'
+        self.r = 224//r
+
+        patients = ['C73']
+        reps = ['A1', 'B1', 'C1', 'D1']
+        names = []
+        for i in patients:
+            for j in reps:
+                names.append(i+j) #used to be i + _ST_ + j
+        gene_list = list(np.load('data/skin_hvg_cut_1000.npy',allow_pickle=True))
+
+        self.ori = ori
+        self.adj = adj
+        self.norm = norm
+        self.train = train
+        self.flatten = flatten
+        self.gene_list = gene_list
+        samples = names
+        te_names = [samples[fold]]
+        tr_names = list(set(samples)-set(te_names))
+
+        if train:
+            self.names = tr_names
+        else:
+            self.names = te_names
+
+        print(te_names)
+        print('Loading imgs...')
+        #self.img_dict = {i:torch.Tensor(np.array(self.get_img(i))) for i in self.names} #copies data -> more memory
+        self.img_dict = {i:torch.from_numpy(np.array(self.get_img(i))) for i in self.names}
+        print('Loading metadata...')
+        self.meta_dict = {i:self.get_meta(i) for i in self.names}
+
+        self.gene_set = list(gene_list)
+        if self.norm:
+            self.exp_dict = {
+                i:sc.pp.scale(scp.transform.log(scp.normalize.library_size_normalize(m[self.gene_set].values)))
+                for i,m in self.meta_dict.items()
+            }
+        else:
+            self.exp_dict = {
+                i:scp.transform.log(scp.normalize.library_size_normalize(m[self.gene_set].values)) 
+                for i,m in self.meta_dict.items()
+            }
+        if self.ori:
+            self.ori_dict = {i:m[self.gene_set].values for i,m in self.meta_dict.items()}
+            self.counts_dict={}
+            for i,m in self.ori_dict.items():
+                n_counts=m.sum(1)
+                sf = n_counts / np.median(n_counts)
+                self.counts_dict[i]=sf
+        self.center_dict = {
+            i:np.floor(m[['pixel_x','pixel_y']].values).astype(int)
+            for i,m in self.meta_dict.items()
+        }
+        self.loc_dict = {i:m[['x','y']].values for i,m in self.meta_dict.items()}
+        self.adj_dict = {
+            i:calcADJ(m,neighs,pruneTag=prune)
+            for i,m in self.loc_dict.items()
+        }
+        self.patch_dict=dfd(lambda :None)
+        self.lengths = [len(i) for i in self.meta_dict.values()]
+        self.cumlen = np.cumsum(self.lengths)
+        self.id2name = dict(enumerate(self.names))
+
+
+    def filter_helper(self):
+        a = np.zeros(len(self.gene_list))
+        n = 0
+        for i,exp in self.exp_dict.items():
+            n += exp.shape[0]
+            exp[exp>0] = 1
+            for j in range((len(self.gene_list))):
+                a[j] += np.sum(exp[:,j])
+
+
+    def __getitem__(self, index):
+        ID=self.id2name[index]
+        im = self.img_dict[ID].permute(1,0,2)
+
+        exps = self.exp_dict[ID]
+        if self.ori:
+            oris = self.ori_dict[ID]
+            sfs = self.counts_dict[ID]
+        adj=self.adj_dict[ID]
+        centers = self.center_dict[ID]
+        loc = self.loc_dict[ID]
+        patches = self.patch_dict[ID]
+        positions = torch.LongTensor(loc)
+        patch_dim = 3 * self.r * self.r * 4
+        exps = torch.Tensor(exps)
+        if patches is None:
+            n_patches = len(centers)
+            if self.flatten:
+                patches = torch.zeros((n_patches,patch_dim))
+            else:
+                patches = torch.zeros((n_patches,3,2*self.r,2*self.r))
+
+            for i in range(n_patches):
+                center = centers[i]
+                x, y = center
+                patch = im[(x-self.r):(x+self.r),(y-self.r):(y+self.r),:]
+                if self.flatten:
+                    patches[i] = patch.flatten()
+                else:
+                    patches[i]=patch.permute(2,0,1)
+            self.patch_dict[ID]=patches
+        data=[patches, positions, exps]
+        if self.adj:
+            data.append(adj)
+        if self.ori:
+            data+=[torch.Tensor(oris),torch.Tensor(sfs)]
+        data.append(torch.Tensor(centers))
+        return data
+        
+    def __len__(self):
+        return len(self.exp_dict)
+
+    def get_img(self,name):
+        path = glob.glob(self.dir+'*'+name+'_Merged.jpg')[0] #used to be name + .jpg
+        im = Image.open(path)
+        return im
+
+    def get_cnt(self,name):
+        import scipy.io as sio
+        features_path = glob.glob(self.dir+'*'+name+'_features.tsv')[0]
+        barcodes_path = glob.glob(self.dir+'*'+name+'_barcodes.tsv')[0]
+        mtx_path = glob.glob(self.dir+'*'+name+'_matrix.mtx')[0]
+        f = pd.read_csv(features_path,sep='\t',header=None)
+        bc= pd.read_csv(barcodes_path,sep='\t',header=None)
+        mtx = sio.mmread(mtx_path).toarray()
+        c=pd.DataFrame(data = mtx, index = f[1], columns = bc[0]).T
+        c.rename_axis(None, axis=0, inplace=True) #get rid of names
+        c.rename_axis(None, axis=1, inplace=True)
+        c['WHSC1L1'] = 0 # these genes were not measured, but will be predicted when using the trained skin cancer model
+        c["AC013461.1"] = 0
+        c["MLLT4"] = 0
+        return c
+
+    def get_pos(self,name):
+        path = glob.glob(self.dir+"*"+name+"*tissue_positions_list.csv")[0]
+        df = pd.read_csv(path, header=None)
+        df = df.loc[df[1]==1] #get the spots covering tissue
+        df = df.rename(columns={0: "id", 1:"tissue", 2:"x", 3:"y", 4:"pixel_x", 5:"pixel_y"}).drop(columns="tissue")
         return df
 
     def get_meta(self,name,gene_list=None):

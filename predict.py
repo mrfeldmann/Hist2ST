@@ -3,13 +3,13 @@ import numpy as np
 import scanpy as sc
 import anndata as ad
 from tqdm import tqdm
-from dataset import ViT_HER2ST, ViT_SKIN
+from dataset import ViT_HER2ST, ViT_SKIN, ViT_LIVER
 from scipy.stats import pearsonr,spearmanr
 from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score as ari_score
 from sklearn.metrics.cluster import normalized_mutual_info_score as nmi_score
 def pk_load(fold,mode='train',flatten=False,dataset='her2st',r=4,ori=True,adj=True,prune='Grid',neighs=4):
-    assert dataset in ['her2st','cscc']
+    assert dataset in ['her2st','cscc','liver']
     if dataset=='her2st':
         dataset = ViT_HER2ST(
             train=(mode=='train'),fold=fold,flatten=flatten,
@@ -17,6 +17,11 @@ def pk_load(fold,mode='train',flatten=False,dataset='her2st',r=4,ori=True,adj=Tr
         )
     elif dataset=='cscc':
         dataset = ViT_SKIN(
+            train=(mode=='train'),fold=fold,flatten=flatten,
+            ori=ori,neighs=neighs,adj=adj,prune=prune,r=r
+        )
+    elif dataset=='liver':
+        dataset = ViT_LIVER(
             train=(mode=='train'),fold=fold,flatten=flatten,
             ori=ori,neighs=neighs,adj=adj,prune=prune,r=r
         )

@@ -101,6 +101,8 @@ class Hist2ST(pl.LightningModule):
         
         self.label=label
         self.patch_embedding = nn.Conv2d(3,channel,patch_size,patch_size)
+        #print(f"n_pos {n_pos}")
+        #print(f"dim {dim}")
         self.x_embed = nn.Embedding(n_pos,dim)
         self.y_embed = nn.Embedding(n_pos,dim)
         self.vit = ViT(
@@ -136,7 +138,11 @@ class Hist2ST(pl.LightningModule):
         ])
     def forward(self, patches, centers, adj, aug=False):
         B,N,C,H,W=patches.shape
+        #print(f"patches shape {patches.shape}")
         patches=patches.reshape(B*N,C,H,W)
+        #print(f"centers shape {centers.shape}")
+        #print(f"centers max {torch.max(centers[:,:,0])}")
+        #print(f"centers min {torch.min(centers[:,:,0])}")
         patches = self.patch_embedding(patches)
         centers_x = self.x_embed(centers[:,:,0])
         centers_y = self.y_embed(centers[:,:,1])
